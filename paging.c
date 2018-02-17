@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
+
+#define MEMORY_SIZE 100
+#define PAGE_SIZE 1
 
 // physical memory frame
 typedef struct frame {
@@ -15,11 +19,8 @@ typedef struct f_frame {
 	struct f_frame * next;
 } f_frame;
 
-int mem_size = 100;
-int page_size = 1;
-
-frame * *memory = NULL; // memory map
-f_frame *head = NULL; // free list
+frame * memory[MEMORY_SIZE]; // memory map
+f_frame * head = NULL; // free list
 
 // int count = 0; // DEBUG, increment when -1<=delta_i<=1
 
@@ -31,15 +32,15 @@ void init_flist() {
 	// head is 0 and last node is 99
 	// we can randomize if we want
 	head = malloc(sizeof(f_frame));
-	head->f = malloc(sizeof(frame));
+	head->f = malloc(sizeof(frame *));
 	head->f->num = 0;
 	head->next = NULL;
 
 	int i = 1;
 	f_frame * current = head;
-	while (i < (mem_size/page_size)) {
+	while (i < (MEMORY_SIZE/PAGE_SIZE)) {
 		current->next = malloc(sizeof(f_frame));
-		current->next->f = malloc(sizeof(frame));
+		current->next->f = malloc(sizeof(frame *));
 		current->next->f->num = i;
 		current = current->next;
 		i += 1;
@@ -48,7 +49,7 @@ void init_flist() {
 }
 
 // adds a free page to the end of the list
-void add_to_flist(int num) {
+void flist_append(int num) {
 
     f_frame * current = head;
     while (current->next != NULL) {
@@ -56,28 +57,29 @@ void add_to_flist(int num) {
     }
 
     current->next = malloc(sizeof(f_frame));
-    current->next->f = malloc(sizeof(frame));
+    current->next->f = malloc(sizeof(frame *));
     current->next->f->num = num;
     current->next->next = NULL;
 
 }
 
-// returns the head of the free list and removes it from the list
-// returns NULL if head is null
-frame * pop_flist_head() {
+// returns the frame number of the head of the free list and removes it from the list
+// returns -1 if head is null
+int flist_pop() {
 
 	if (head == NULL) {
-        return NULL;
+        return -1;
     }
 
-    f_frame * next_frame = NULL;
-	frame * retval = NULL;
-	retval = head->f;
-    next_frame = head->next;
-    free(head->f);
-    free(head);
+    int retval = head->f->num;
+    f_frame * front = head;
+    head = head->next;
+    front->next = NULL;
+    if (front == head) {
+    	head = NULL;
+    }
+    free(front);
 
-    head = next_frame;
     return retval;
 
 }
@@ -114,8 +116,8 @@ void print_flist() {
 void init_mmap() {
 
 	int i;
-	for (i = 0; i < mem_size; i++) {
-		memory[i] = malloc(sizeof(frame));
+	for (i = 0; i < MEMORY_SIZE; i++) {
+		memory[i] = malloc(sizeof(frame *));
 		memory[i]->num = i;
 		memory[i]->page = -1;
 		memory[i]->proc_name = 46; // "." char
@@ -124,10 +126,10 @@ void init_mmap() {
 }
 
 // returns index in memory map if page is in memory, -1 otherwise
-int is_page_in_mem(int page) {
+int get_page_pfn(int page) {
 
 	int i;
-	for (i = 0; i < mem_size; i++) {
+	for (i = 0; i < MEMORY_SIZE; i++) {
 		if (memory[i]->page == page) {
 			return i;
 		}
@@ -140,14 +142,13 @@ int is_page_in_mem(int page) {
 void page_in(int page, char proc_name) {
 
 	// obtain a free frame
-	frame * f = pop_flist_head();
-
-	// load page to free frame
-	f->page = page;
-	f->proc_name = proc_name;
+	int index = flist_pop();
+	// printf("Removed frame #%d from free list.\n", index);
 
 	// update memory map
-	memory[f->num] = f;
+	memory[index]->page = page;
+	memory[index]->proc_name = proc_name;
+	// printf("Updated frame #%d [page #%d, proc %c] in memory\n", index, page, proc_name);
 
 }
 
@@ -155,11 +156,12 @@ void page_in(int page, char proc_name) {
 void evict(int frame_num) {
 
 	// update memory slot
+	// printf("Evicted frame #%d [page #%d, proc %c] from memory\n", frame_num, memory[frame_num]->page, memory[frame_num]->proc_name);
 	memory[frame_num]->page = -1;
 	memory[frame_num]->proc_name = 46;
 
 	// update free list
-	add_to_flist(frame_num);
+	flist_append(frame_num);
 
 }
 
@@ -168,7 +170,7 @@ void print_mmap() {
 
 	int i;
 	printf("Memory Map: <");
-	for (i = 0; i < mem_size; i++) {
+	for (i = 0; i < MEMORY_SIZE; i++) {
 		printf("%c", memory[i]->proc_name);
 	}
 	printf("> \n");
@@ -212,6 +214,15 @@ int gen_ref(int i) {
 
 }
 
+void clean_up() {
+
+	int i;
+	for (i = 0; i < MEMORY_SIZE; i++) {
+		free(memory[i]);
+	}
+
+}
+
 int main(int argc, char* argv[]) {
 
 	// DEBUG: testing gen_ref()
@@ -224,9 +235,8 @@ int main(int argc, char* argv[]) {
 	// printf("-1<=delta_i<=1: %.2f%%\n", (count/10000.) * 100);
 
 	// Initialize the memory map
-	memory = malloc(sizeof(frame) * (mem_size));
 	init_mmap();
-
+	// print_mmap();
 	/************************************* SIMULATION *************************************/
 
 	// Generate the workload and represent it as sorted queue based on arrival time
@@ -234,6 +244,7 @@ int main(int argc, char* argv[]) {
 
 	// Create and initialize the free page list, initially with 100 pages, each is 1 MB
 	init_flist();
+	// print_flist();
 
 	// Pick up one job at a time from the job queue and if there are 4 free pages in the free page list
 	// then start running that process, otherwise wait till one of the existing processes complete
@@ -242,13 +253,17 @@ int main(int argc, char* argv[]) {
 
 	// ...
 
+	// DEBUG
+	// page_in(43, 101);
+	// print_mmap();
+	// page_in(48, 102);
+	// print_mmap();
+	// printf("%d\n", get_page_pfn(43));
+	// evict(get_page_pfn(43));
+	// print_mmap();
+
 	// CLEAN UP
-	int i;
-	// Need to fix this, causing free error
-	// for (i = 0; i < mem_size; i++) {
-	// 	free(memory[i]);
-	// }
-	free(memory);
+	clean_up();
 
 	exit(0);
 
